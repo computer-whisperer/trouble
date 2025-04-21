@@ -80,6 +80,8 @@ pub struct ScanConfig<'d> {
     pub window: Duration,
     /// Scan timeout.
     pub timeout: Duration,
+    /// Filter out duplicate entries
+    pub filter_duplicates: bool,
 }
 
 impl Default for ScanConfig<'_> {
@@ -91,6 +93,7 @@ impl Default for ScanConfig<'_> {
             interval: Duration::from_secs(1),
             window: Duration::from_secs(1),
             timeout: Duration::from_secs(0),
+            filter_duplicates: true
         }
     }
 }

@@ -121,7 +121,7 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
         );
         host.command(params).await?;
 
-        host.command(LeSetScanEnable::new(true, true)).await?;
+        host.command(LeSetScanEnable::new(true, config.filter_duplicates)).await?;
         drop.defuse();
         Ok(ScanSession {
             command_state: &self.central.host.scan_command_state,
