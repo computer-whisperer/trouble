@@ -9,7 +9,6 @@
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::String;
-use static_cell::StaticCell;
 
 use crate::prelude::*;
 
@@ -82,8 +81,30 @@ impl<'a> GapConfig<'a> {
 impl<'a> PeripheralConfig<'a> {
     /// Add the peripheral GAP config to the attribute table
     fn build<M: RawMutex, const MAX: usize>(self, table: &mut AttributeTable<'a, M, MAX>) -> Result<(), &'static str> {
-        static PERIPHERAL_NAME: StaticCell<String<DEVICE_NAME_MAX_LENGTH>> = StaticCell::new();
-        let peripheral_name = PERIPHERAL_NAME.init(String::new());
+        use core::cell::UnsafeCell;
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        // Storage for peripheral name that can be reused across radio power cycles
+        struct PeripheralNameStorage {
+            initialized: AtomicBool,
+            name: UnsafeCell<String<DEVICE_NAME_MAX_LENGTH>>,
+        }
+        // SAFETY: Access is synchronized via the initialized flag and single-threaded BLE task
+        unsafe impl Sync for PeripheralNameStorage {}
+
+        static PERIPHERAL_NAME: PeripheralNameStorage = PeripheralNameStorage {
+            initialized: AtomicBool::new(false),
+            name: UnsafeCell::new(String::new()),
+        };
+
+        let peripheral_name = unsafe {
+            let name = &mut *PERIPHERAL_NAME.name.get();
+            if PERIPHERAL_NAME.initialized.swap(true, Ordering::AcqRel) {
+                // Already initialized - clear for reuse
+                name.clear();
+            }
+            name
+        };
         peripheral_name
             .push_str(self.name)
             .map_err(|_| "Device name is too long. Max length is 22 bytes")?;
@@ -100,10 +121,32 @@ impl<'a> PeripheralConfig<'a> {
 }
 
 impl<'a> CentralConfig<'a> {
-    /// Add the peripheral GAP config to the attribute table
+    /// Add the central GAP config to the attribute table
     fn build<M: RawMutex, const MAX: usize>(self, table: &mut AttributeTable<'a, M, MAX>) -> Result<(), &'static str> {
-        static CENTRAL_NAME: StaticCell<String<DEVICE_NAME_MAX_LENGTH>> = StaticCell::new();
-        let central_name = CENTRAL_NAME.init(String::new());
+        use core::cell::UnsafeCell;
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        // Storage for central name that can be reused across radio power cycles
+        struct CentralNameStorage {
+            initialized: AtomicBool,
+            name: UnsafeCell<String<DEVICE_NAME_MAX_LENGTH>>,
+        }
+        // SAFETY: Access is synchronized via the initialized flag and single-threaded BLE task
+        unsafe impl Sync for CentralNameStorage {}
+
+        static CENTRAL_NAME: CentralNameStorage = CentralNameStorage {
+            initialized: AtomicBool::new(false),
+            name: UnsafeCell::new(String::new()),
+        };
+
+        let central_name = unsafe {
+            let name = &mut *CENTRAL_NAME.name.get();
+            if CENTRAL_NAME.initialized.swap(true, Ordering::AcqRel) {
+                // Already initialized - clear for reuse
+                name.clear();
+            }
+            name
+        };
         central_name
             .push_str(self.name)
             .map_err(|_| "Device name is too long. Max length is 22 bytes")?;

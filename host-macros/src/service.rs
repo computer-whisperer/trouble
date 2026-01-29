@@ -172,8 +172,23 @@ impl ServiceBuilder {
                 let mut builder = if <#ty as trouble_host::types::gatt_traits::AsGatt>::MAX_SIZE <= 8 {
                     service.add_characteristic_small(#uuid, &[#(#properties),*], #default_value)
                 } else {
-                    static #name_screaming: static_cell::StaticCell<[u8; <#ty as trouble_host::types::gatt_traits::AsGatt>::MAX_SIZE]> = static_cell::StaticCell::new();
-                    let store = #name_screaming.init([0; <#ty as trouble_host::types::gatt_traits::AsGatt>::MAX_SIZE]);
+                    // Use reusable storage that can be reinitialized across radio power cycles
+                    struct CharStorage {
+                        initialized: core::sync::atomic::AtomicBool,
+                        data: core::cell::UnsafeCell<[u8; <#ty as trouble_host::types::gatt_traits::AsGatt>::MAX_SIZE]>,
+                    }
+                    unsafe impl Sync for CharStorage {}
+                    static #name_screaming: CharStorage = CharStorage {
+                        initialized: core::sync::atomic::AtomicBool::new(false),
+                        data: core::cell::UnsafeCell::new([0; <#ty as trouble_host::types::gatt_traits::AsGatt>::MAX_SIZE]),
+                    };
+                    let store = unsafe {
+                        let data = &mut *#name_screaming.data.get();
+                        if #name_screaming.initialized.swap(true, core::sync::atomic::Ordering::AcqRel) {
+                            data.fill(0);
+                        }
+                        data
+                    };
                     service
                         .add_characteristic(#uuid, &[#(#properties),*], #default_value, store)
                 };
@@ -359,8 +374,23 @@ impl ServiceBuilder {
                                         #default_value,
                                     )
                                 } else {
-                                    static #name_screaming: static_cell::StaticCell<[u8; #capacity_screaming]> = static_cell::StaticCell::new();
-                                    let store = #name_screaming.init([0; #capacity]);
+                                    // Use reusable storage that can be reinitialized across radio power cycles
+                                    struct DescStorage {
+                                        initialized: core::sync::atomic::AtomicBool,
+                                        data: core::cell::UnsafeCell<[u8; #capacity_screaming]>,
+                                    }
+                                    unsafe impl Sync for DescStorage {}
+                                    static #name_screaming: DescStorage = DescStorage {
+                                        initialized: core::sync::atomic::AtomicBool::new(false),
+                                        data: core::cell::UnsafeCell::new([0; #capacity_screaming]),
+                                    };
+                                    let store = unsafe {
+                                        let data = &mut *#name_screaming.data.get();
+                                        if #name_screaming.initialized.swap(true, core::sync::atomic::Ordering::AcqRel) {
+                                            data.fill(0);
+                                        }
+                                        data
+                                    };
                                     builder.add_descriptor(
                                         #uuid,
                                         &[#(#properties),*],
