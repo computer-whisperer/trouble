@@ -418,7 +418,9 @@ impl AdStructure<'_> {
                 w.append(&[0x02, 0x01, *flags])?;
             }
             AdStructure::ServiceUuids16(uuids) => {
-                w.append(&[(uuids.len() * 2 + 1) as u8, 0x02])?;
+                // Use 0x03 "Complete List" instead of 0x02 "Incomplete List"
+                // Android's ScanFilter.setServiceUuid() doesn't reliably match 0x02
+                w.append(&[(uuids.len() * 2 + 1) as u8, 0x03])?;
                 for uuid in uuids.iter() {
                     w.write_ref(&Uuid::Uuid16(*uuid))?;
                 }
