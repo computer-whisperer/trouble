@@ -296,9 +296,9 @@ where
                     return Err(Error::NotSupported);
                 }
 
-                // Avoids using the packet buffer for signalling packets
-                if header.channel == L2CAP_CID_LE_U_SIGNAL {
-                    assert!(data.len() == header.length as usize);
+                // Fast-path for signalling packets that fit in a single ACL fragment.
+                // If fragmented (e.g. under controller load), fall through to reassembly.
+                if header.channel == L2CAP_CID_LE_U_SIGNAL && data.len() == header.length as usize {
                     self.channels.signal(acl.handle(), data, &self.connections)?;
                     return Ok(());
                 }
@@ -507,7 +507,8 @@ where
                 }
             }
             L2CAP_CID_LE_U_SIGNAL => {
-                panic!("le signalling channel was fragmented, impossible!");
+                // Signalling PDU arrived via HCI reassembly (fragmented under load).
+                self.channels.signal(acl.handle(), pdu.as_ref(), &self.connections)?;
             }
             L2CAP_CID_LE_U_SECURITY_MANAGER => {
                 self.connections
@@ -790,7 +791,10 @@ impl<'d, C: Controller, P: PacketPool> RxRunner<'d, C, P> {
     where
         C: ControllerCmdSync<Disconnect>,
     {
-        const MAX_HCI_PACKET_LEN: usize = 259;
+        // Must be >= the transport's max packet size (cyw43 BT_HCI_MTU = 1024).
+        // The previous value of 259 silently truncated ACL packets with >254 bytes
+        // of data, causing HciDecode(InvalidSize) under L2CAP CoC throughput.
+        const MAX_HCI_PACKET_LEN: usize = 1024;
         let host = &self.stack.host;
         // use embassy_time::Instant;
         // let mut last = Instant::now();
@@ -1106,7 +1110,7 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
         host.connections
             .set_link_credits(ret.total_num_le_acl_data_packets as usize);
 
-        const ACL_LEN: u16 = 255;
+        const ACL_LEN: u16 = 1019;
         const ACL_N: u16 = 1;
         info!(
             "[host] configuring host buffers ({} packets of size {})",
