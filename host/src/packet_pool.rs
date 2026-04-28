@@ -167,14 +167,14 @@ impl Drop for Packet {
 impl AsRef<[u8]> for Packet {
     fn as_ref(&self) -> &[u8] {
         let p = self.p_ref.as_ref().unwrap();
-        unsafe { &(*p.buf)[..] }
+        unsafe { &(&*p.buf)[..] }
     }
 }
 
 impl AsMut<[u8]> for Packet {
     fn as_mut(&mut self) -> &mut [u8] {
         let p = self.p_ref.as_mut().unwrap();
-        unsafe { &mut (*p.buf)[..] }
+        unsafe { &mut (&mut *p.buf)[..] }
     }
 }
 
