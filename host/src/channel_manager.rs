@@ -353,6 +353,11 @@ impl<'d, P: PacketPool> ChannelManager<'d, P> {
                         return Err(Error::OutOfMemory);
                     }
                     storage.flow_control.confirm_received(1);
+                    trace!(
+                        "[bleip-diag] CoC consume cid={} credits_remaining={}",
+                        channel,
+                        storage.flow_control.available()
+                    );
                     #[cfg(feature = "channel-metrics")]
                     storage.metrics.received(1);
                     return Ok(());
@@ -800,6 +805,12 @@ impl<'d, P: PacketPool> ChannelManager<'d, P> {
                 let chan = &mut state.channels[index.0 as usize];
                 if chan.state == ChannelState::Connected {
                     chan.flow_control.confirm_granted(credits);
+                    debug!(
+                        "[bleip-diag] CoC grant cid={} granted={} credits_total={}",
+                        cid,
+                        credits,
+                        chan.flow_control.available()
+                    );
                     return Ok(());
                 }
                 debug!("[l2cap][flow_control_grant] channel {:?} not found", index);

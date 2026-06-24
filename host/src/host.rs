@@ -334,6 +334,11 @@ where
                             };
                             // Something is wrong if assembly was finished since we've not received the last fragment.
                             if r.is_some() {
+                                debug!(
+                                    "[bleip-diag] reassembly InvalidState @siteA(start-finished-early) cid={} frag_len={}",
+                                    header.channel,
+                                    data.len()
+                                );
                                 Err(Error::InvalidState)
                             } else {
                                 Ok(())
@@ -350,6 +355,12 @@ where
                         p.init(header.channel, header.length, packet)?;
                         let r = p.update(data)?;
                         if r.is_some() {
+                            debug!(
+                                "[bleip-diag] reassembly InvalidState @siteB(noopt-start-finished-early) cid={} hdr_len={} frag_len={}",
+                                header.channel,
+                                header.length,
+                                data.len()
+                            );
                             Err(Error::InvalidState)
                         } else {
                             Ok(())
@@ -398,6 +409,12 @@ where
                             p.update(data)
                         })?;
                         let Some((state, pdu)) = result else {
+                            debug!(
+                                "[bleip-diag] reassembly InvalidState @siteC(noopt-single-kframe-incomplete) cid={} hdr_len={} frag_len={}",
+                                header.channel,
+                                header.length,
+                                data.len()
+                            );
                             return Err(Error::InvalidState);
                         };
                         (state, pdu)
@@ -410,6 +427,11 @@ where
                 // Get the existing fragment
                 if let Some((header, p)) = self.connections.reassembly(acl.handle(), |p| {
                     if !p.in_progress() {
+                        debug!(
+                            "[bleip-diag] reassembly InvalidState @siteD(continuation-no-assembly-in-progress) handle={} frag_len={}",
+                            acl.handle().raw(),
+                            acl.data().len()
+                        );
                         warn!(
                             "[host] unexpected continuation fragment of length {} for handle {}: {:?}",
                             acl.data().len(),
@@ -821,6 +843,11 @@ impl<'d, C: Controller, P: PacketPool> RxRunner<'d, C, P> {
 
                         match e {
                             Error::InvalidState | Error::Disconnected => {
+                                debug!(
+                                    "[bleip-diag] RX-runner auto-disconnect handle={:?} err={:?}",
+                                    acl.handle(),
+                                    e
+                                );
                                 warn!("[host] requesting {:?} to be disconnected", acl.handle());
                                 host.connections.log_status(true);
                                 host.connections.request_handle_disconnect(

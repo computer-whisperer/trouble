@@ -418,6 +418,10 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
                 "bug: dropping a connection with refcount 0"
             );
             if conn.refcount == 0 && conn.state == ConnectionState::Connected {
+                debug!(
+                    "[bleip-diag] Connection drop -> disconnect idx={} reason=RemoteUserTerminated",
+                    index
+                );
                 conn.state = ConnectionState::DisconnectRequest(DisconnectReason::RemoteUserTerminatedConn);
                 state.disconnect_waker.wake();
             }
