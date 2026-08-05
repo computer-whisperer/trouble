@@ -125,6 +125,11 @@ impl<P> PacketReassembly<P> {
         self.state.is_some()
     }
 
+    /// The target channel of the in-progress reassembly, if any.
+    pub fn channel(&self) -> Option<u16> {
+        self.state.as_ref().map(|s| s.state.channel)
+    }
+
     /// Updates any in progress packet assembly for the connection
     ///
     /// If the reassembly is complete, the complete PDU is returned.

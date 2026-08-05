@@ -280,6 +280,43 @@ where
         true
     }
 
+    /// Refund the CoC credit consumed by an inbound K-frame that was dropped
+    /// before reaching channel dispatch. The non-optimized reassembly path
+    /// accounts credits at dispatch time, so a dropped frame would otherwise
+    /// leak its credit and permanently shrink the peer's send window.
+    fn refund_dropped_kframe_credit(&self, channel: u16) {
+        #[cfg(not(feature = "l2cap-sdu-reassembly-optimization"))]
+        if channel >= L2CAP_CID_DYN_START {
+            // Errors (unknown channel, no credit outstanding) mean there is
+            // nothing to refund.
+            let _ = self.channels.received(channel, 1);
+        }
+        #[cfg(feature = "l2cap-sdu-reassembly-optimization")]
+        // Credits are accounted at frame start in this mode; nothing leaks.
+        let _ = channel;
+    }
+
+    /// Drop any stale in-progress reassembly for `handle` (a new first
+    /// fragment arriving mid-assembly means the previous PDU's tail was
+    /// lost), refunding the stale PDU's CoC credit.
+    fn clear_stale_reassembly(&self, handle: ConnHandle) -> Result<(), Error> {
+        let stale = self.connections.reassembly(handle, |p| {
+            let stale = p.channel();
+            if stale.is_some() {
+                p.clear();
+            }
+            Ok(stale)
+        })?;
+        if let Some(channel) = stale {
+            warn!(
+                "[host] dropping stale partial reassembly on channel {} (superseded by a new PDU)",
+                channel
+            );
+            self.refund_dropped_kframe_credit(channel);
+        }
+        Ok(())
+    }
+
     fn handle_acl(&self, acl: AclPacket<'_>, event_handler: &dyn EventHandler) -> Result<(), Error> {
         self.connections.received(acl.handle())?;
         let handle = acl.handle();
@@ -347,25 +384,35 @@ where
                         return Ok(());
                     }
 
+                    // A first fragment while an assembly is still in progress means
+                    // the previous PDU's tail was lost — drop the stale assembly
+                    // (refunding its credit) and start fresh instead of erroring
+                    // the connection.
+                    self.clear_stale_reassembly(acl.handle())?;
                     let Some(packet) = P::allocate() else {
-                        warn!("[host] no memory for packets on channel {}", header.channel);
-                        return Err(Error::OutOfMemory);
+                        warn!(
+                            "[host] no memory for packets on channel {}, dropping PDU",
+                            header.channel
+                        );
+                        self.refund_dropped_kframe_credit(header.channel);
+                        return Ok(());
                     };
-                    self.connections.reassembly(acl.handle(), |p| {
-                        p.init(header.channel, header.length, packet)?;
-                        let r = p.update(data)?;
-                        if r.is_some() {
-                            debug!(
-                                "[bleip-diag] reassembly InvalidState @siteB(noopt-start-finished-early) cid={} hdr_len={} frag_len={}",
-                                header.channel,
-                                header.length,
-                                data.len()
-                            );
-                            Err(Error::InvalidState)
-                        } else {
-                            Ok(())
-                        }
-                    })?;
+                    if self
+                        .connections
+                        .reassembly(acl.handle(), |p| {
+                            p.init(header.channel, header.length, packet)?;
+                            // A fresh assembly cannot complete here (this branch has
+                            // fragment len != PDU len); a write error self-clears it.
+                            p.update(data).map(|_| ())
+                        })
+                        .is_err()
+                    {
+                        warn!(
+                            "[host] reassembly start failed on channel {}, dropping PDU",
+                            header.channel
+                        );
+                        self.refund_dropped_kframe_credit(header.channel);
+                    }
                     return Ok(());
                 } else {
                     #[allow(unused_mut)]
@@ -400,22 +447,39 @@ where
                     if let Some((state, pdu)) = result {
                         (state, pdu)
                     } else {
+                        // Complete PDU in one ACL fragment (the common case). A
+                        // stale in-progress assembly means an earlier PDU's tail
+                        // was lost — drop it (refunding its credit) and process
+                        // this PDU normally instead of erroring the connection.
+                        self.clear_stale_reassembly(acl.handle())?;
                         let Some(packet) = P::allocate() else {
-                            warn!("[host] no memory for packets on channel {}", header.channel);
-                            return Err(Error::OutOfMemory);
+                            warn!(
+                                "[host] no memory for packets on channel {}, dropping PDU",
+                                header.channel
+                            );
+                            self.refund_dropped_kframe_credit(header.channel);
+                            return Ok(());
                         };
                         let result = self.connections.reassembly(acl.handle(), |p| {
                             p.init(header.channel, header.length, packet)?;
                             p.update(data)
                         })?;
                         let Some((state, pdu)) = result else {
-                            debug!(
-                                "[bleip-diag] reassembly InvalidState @siteC(noopt-single-kframe-incomplete) cid={} hdr_len={} frag_len={}",
+                            // Unreachable with a well-formed header (fragment len
+                            // == PDU len completes the fresh assembly); drop the
+                            // malformed PDU rather than error the connection.
+                            warn!(
+                                "[host] malformed single-fragment PDU on channel {} (hdr_len={} frag_len={}), dropping",
                                 header.channel,
                                 header.length,
                                 data.len()
                             );
-                            return Err(Error::InvalidState);
+                            self.connections.reassembly(acl.handle(), |p| {
+                                p.clear();
+                                Ok(())
+                            })?;
+                            self.refund_dropped_kframe_credit(header.channel);
+                            return Ok(());
                         };
                         (state, pdu)
                     }
@@ -424,24 +488,40 @@ where
             // Next (potentially last) in a fragment
             AclPacketBoundary::Continuing => {
                 trace!("[host] inbound l2cap len = {}", acl.data().len(),);
-                // Get the existing fragment
-                if let Some((header, p)) = self.connections.reassembly(acl.handle(), |p| {
+                // Get the existing fragment. A continuation without an assembly
+                // in progress is the tail of a PDU whose start fragment was
+                // dropped (pool exhaustion) — drop it too; the start-fragment
+                // drop already refunded the credit. An update error means a
+                // malformed length; the assembly self-clears on error, so only
+                // the credit needs refunding.
+                let mut dropped_channel: Option<u16> = None;
+                let result = self.connections.reassembly(acl.handle(), |p| {
                     if !p.in_progress() {
                         debug!(
-                            "[bleip-diag] reassembly InvalidState @siteD(continuation-no-assembly-in-progress) handle={} frag_len={}",
-                            acl.handle().raw(),
-                            acl.data().len()
-                        );
-                        warn!(
-                            "[host] unexpected continuation fragment of length {} for handle {}: {:?}",
+                            "[host] dropping continuation fragment of length {} for handle {} (start was dropped)",
                             acl.data().len(),
                             acl.handle().raw(),
-                            p
                         );
-                        return Err(Error::InvalidState);
+                        return Ok(None);
                     }
-                    p.update(acl.data())
-                })? {
+                    let channel = p.channel();
+                    match p.update(acl.data()) {
+                        Ok(done) => Ok(done),
+                        Err(e) => {
+                            warn!(
+                                "[host] reassembly update failed on channel {:?}: {:?}, dropping PDU",
+                                channel, e
+                            );
+                            dropped_channel = channel;
+                            Ok(None)
+                        }
+                    }
+                })?;
+                if let Some(channel) = dropped_channel {
+                    self.refund_dropped_kframe_credit(channel);
+                    return Ok(());
+                }
+                if let Some((header, p)) = result {
                     (header, p)
                 } else {
                     // Do not process yet

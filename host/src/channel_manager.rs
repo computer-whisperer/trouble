@@ -600,6 +600,22 @@ impl<'d, P: PacketPool> ChannelManager<'d, P> {
         Ok(())
     }
 
+    /// Send any pending credit grants for a channel without receiving.
+    ///
+    /// Grants normally piggyback on the receive path; when inbound frames
+    /// were dropped before reaching the queue (packet-pool exhaustion),
+    /// the refunded credits can strand with no receive to flush them —
+    /// leaving the peer's send window permanently shrunk. Idle receivers
+    /// call this periodically to keep the window open.
+    pub(crate) async fn grant_pending<T: Controller>(
+        &self,
+        chan: ChannelIndex,
+        ble: &BleHost<'d, T, P>,
+    ) -> Result<(), BleHostError<T::Error>> {
+        let mut p_buf: [u8; 16] = [0; 16];
+        self.flow_control(chan, ble, &mut p_buf).await
+    }
+
     /// Receive SDU on a given channel.
     ///
     /// The MTU of the channel must be <= the MTU of the packet.
