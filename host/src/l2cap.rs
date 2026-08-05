@@ -370,6 +370,20 @@ impl<'d, P: PacketPool> L2capChannelReader<'d, P> {
         stack.host().channels().receive_sdu(self.index, stack.host()).await
     }
 
+    /// Send any pending credit grants without receiving.
+    ///
+    /// Grants normally piggyback on `receive`; if inbound frames were
+    /// dropped before reaching the receive queue (packet-pool exhaustion),
+    /// the associated credits can strand with no receive to flush them,
+    /// leaving the peer's send window permanently shrunk. Call this
+    /// periodically from an otherwise-idle receive loop.
+    pub async fn grant_pending_credits<T: Controller>(
+        &mut self,
+        stack: &Stack<'_, T, P>,
+    ) -> Result<(), BleHostError<T::Error>> {
+        stack.host().channels().grant_pending(self.index, stack.host()).await
+    }
+
     /// Read metrics of the l2cap channel.
     #[cfg(feature = "channel-metrics")]
     pub fn metrics<F: FnOnce(&ChannelMetrics) -> R, R>(&self, f: F) -> R {
