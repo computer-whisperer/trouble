@@ -383,6 +383,26 @@ impl<'d, P: PacketPool> ChannelManager<'d, P> {
             let storage = &mut state.channels[chan];
             match storage.state {
                 ChannelState::Connected if channel == storage.cid => {
+                    // [bleip-diag] Ingest gap-timer (point A of the #72 stall
+                    // bisection): dispatch() runs for every inbound CoC
+                    // K-frame delivered by the controller. With an active IP
+                    // session the peer transmits at least ~1 Hz (PTP), so a
+                    // multi-second gap here means frames stalled BELOW
+                    // trouble — controller or HCI transport — while point B
+                    // (reader.receive in main's rx_pump) late WITHOUT point A
+                    // means the queue-to-reader wakeup inside trouble is the
+                    // stall.
+                    {
+                        use core::sync::atomic::{AtomicU32, Ordering};
+                        static LAST_COC_INGEST_MS: AtomicU32 = AtomicU32::new(0);
+                        let now_ms = embassy_time::Instant::now().as_millis() as u32;
+                        let prev = LAST_COC_INGEST_MS.swap(now_ms, Ordering::Relaxed);
+                        let gap = now_ms.wrapping_sub(prev);
+                        if prev != 0 && gap > 500 {
+                            warn!("[bleip-diag] CoC ingest gap {} ms (point A)", gap);
+                        }
+                    }
+
                     // Reassembly and accounting is already done
                     #[cfg(feature = "l2cap-sdu-reassembly-optimization")]
                     sdu.replace(pdu);
