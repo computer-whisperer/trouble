@@ -952,6 +952,36 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         Ok(())
     }
 
+    /// Peripheral-side connection parameter request via L2CAP signaling only
+    /// (Connection Parameter Update Request, Core Vol 3 Part A §4.20).
+    ///
+    /// `update_connection_params` tries the LL Connection Parameter Request
+    /// procedure first and only falls back to L2CAP when the HCI command is
+    /// refused synchronously; a central whose controller lacks the LL
+    /// procedure instead reports `Unsupported Remote Feature` in the later
+    /// LE Connection Update Complete event, which that path cannot see. This
+    /// entry point skips the LL attempt.
+    pub async fn request_connection_params_l2cap<T>(
+        &self,
+        stack: &Stack<'_, T, P>,
+        params: &RequestedConnParams,
+    ) -> Result<(), BleHostError<T::Error>>
+    where
+        T: bt_hci::controller::Controller,
+    {
+        use crate::types::l2cap::ConnParamUpdateReq;
+        let interval_min: bt_hci::param::Duration<1_250> = bt_hci_duration(params.min_connection_interval);
+        let interval_max: bt_hci::param::Duration<1_250> = bt_hci_duration(params.max_connection_interval);
+        let timeout: bt_hci::param::Duration<10_000> = bt_hci_duration(params.supervision_timeout);
+        let param = ConnParamUpdateReq {
+            interval_min: interval_min.as_u16(),
+            interval_max: interval_max.as_u16(),
+            latency: params.max_latency,
+            timeout: timeout.as_u16(),
+        };
+        stack.host().send_conn_param_update_req(self.handle(), &param).await
+    }
+
     /// Update frame space for this connection.
     pub async fn update_frame_space<T>(
         &self,
