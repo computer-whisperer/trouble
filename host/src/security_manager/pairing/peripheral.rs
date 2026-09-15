@@ -481,6 +481,10 @@ impl Pairing {
         ops: &mut OPS,
         pairing_data: &mut PairingData,
     ) -> Result<(), Error> {
+        if !ops.pairing_allowed() {
+            return Err(Error::Security(Reason::PairingNotSupported));
+        }
+
         let peer_features = PairingFeatures::decode(payload).map_err(|_| Error::Security(Reason::InvalidParameters))?;
 
         #[cfg(not(feature = "legacy-pairing"))]

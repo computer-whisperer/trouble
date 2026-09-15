@@ -77,6 +77,14 @@ pub trait PairingOps<P: PacketPool> {
     fn connection_handle(&mut self) -> ConnHandle;
     fn try_send_connection_event(&mut self, event: ConnectionEvent) -> Result<(), Error>;
     fn bonding_flag(&self) -> BondingFlag;
+    /// Whether a peer's Pairing Request may proceed on this connection.
+    /// When `false` the peripheral answers `PairingFailed(PairingNotSupported)`;
+    /// re-establishing encryption with an existing bond is unaffected. Lets an
+    /// application gate fresh pairing behind a physical trigger while bonded
+    /// peers keep working. Defaults to allowed.
+    fn pairing_allowed(&self) -> bool {
+        true
+    }
     /// Whether OOB data is available for this connection.
     fn oob_available(&self) -> bool;
     /// Get the configured passkey, if any.

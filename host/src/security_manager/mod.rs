@@ -1267,6 +1267,10 @@ impl<'sm, 'cm, 'cm2, 'cs, P: PacketPool> PairingOps<P> for PairingOpsImpl<'sm, '
         }
     }
 
+    fn pairing_allowed(&self) -> bool {
+        self.storage.pairing_allowed
+    }
+
     fn connection_handle(&mut self) -> ConnHandle {
         self.conn_handle
     }

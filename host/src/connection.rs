@@ -715,6 +715,17 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         self.manager.get_bondable(self.index)
     }
 
+    /// Set whether a peer's Pairing Request may proceed on this connection.
+    ///
+    /// Defaults to allowed. When disallowed, the peripheral answers a Pairing
+    /// Request with `PairingFailed(PairingNotSupported)`; encryption with an
+    /// existing bond (LTK) is unaffected. Use it to gate fresh pairing behind
+    /// a physical trigger while bonded peers keep working.
+    #[cfg(feature = "security")]
+    pub fn set_pairing_allowed(&self, allowed: bool) -> Result<(), Error> {
+        self.manager.set_pairing_allowed(self.index, allowed)
+    }
+
     /// Set whether the connection is bondable or not.
     ///
     /// By default a connection is **not** bondable.
