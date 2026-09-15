@@ -116,7 +116,10 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             host.command(LeSetAdvData::new(to_copy as u8, buf)).await?;
         }
 
-        if !data.scan_data.is_empty() {
+        // Always written, even when empty: the controller keeps the last
+        // scan response data across advertising restarts, so an empty
+        // `scan_data` must clear it rather than leave a stale name behind.
+        {
             let mut buf = [0; 31];
             let to_copy = data.scan_data.len().min(buf.len());
             buf[..to_copy].copy_from_slice(&data.scan_data[..to_copy]);
@@ -165,7 +168,10 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             buf[..to_copy].copy_from_slice(&data.adv_data[..to_copy]);
             host.command(LeSetAdvData::new(to_copy as u8, buf)).await?;
         }
-        if !data.scan_data.is_empty() {
+        // Always written, even when empty: the controller keeps the last
+        // scan response data across advertising restarts, so an empty
+        // `scan_data` must clear it rather than leave a stale name behind.
+        {
             let mut buf = [0; 31];
             let to_copy = data.scan_data.len().min(buf.len());
             buf[..to_copy].copy_from_slice(&data.scan_data[..to_copy]);
