@@ -341,7 +341,12 @@ impl<'d, P: PacketPool> ChannelManager<'d, P> {
             let mut chan = self.channel_mut(index);
             let req_id = match chan.state {
                 ChannelState::PeerConnecting(req_id) => req_id,
-                _ => return Err(Error::NotFound.into()),
+                _ => {
+                    // The pending handle's index was consumed by `accept()`, so its
+                    // Drop will not run: release the reference here or the slot leaks.
+                    chan.refcount = unwrap!(chan.refcount.checked_sub(1), "bug: dropping a channel with refcount 0");
+                    return Err(Error::NotFound.into());
+                }
             };
             chan.mtu = mtu;
             chan.mps = mps;
@@ -404,10 +409,16 @@ impl<'d, P: PacketPool> ChannelManager<'d, P> {
     }
 
     /// Drop a pending connection without sending a response (peer will time out).
+    ///
+    /// The `L2capPendingConnection` always owns one reference, so it is released
+    /// regardless of the slot's state: if the link went down while the request
+    /// was pending, `disconnected()` has already `close()`d the slot but left the
+    /// refcount alone, and skipping the decrement here would strand the slot
+    /// (`alloc` needs `refcount == 0`) until reboot.
     pub(crate) fn drop_pending(&self, index: ChannelIndex) {
         let mut chan = self.channel_mut(index);
+        chan.refcount = unwrap!(chan.refcount.checked_sub(1), "bug: dropping a channel with refcount 0");
         if matches!(chan.state, ChannelState::PeerConnecting(_)) {
-            chan.refcount = unwrap!(chan.refcount.checked_sub(1), "bug: dropping a channel with refcount 0");
             chan.close();
         }
     }
@@ -1649,6 +1660,8 @@ impl<P> Drop for CreditGrant<'_, P> {
 mod tests {
     extern crate std;
 
+    use core::future::Future;
+
     use bt_hci::param::{AddrKind, BdAddr, LeConnRole, Status};
 
     use super::*;
@@ -1694,5 +1707,136 @@ mod tests {
             chan,
             Poll::Ready(Err(BleHostError::BleHost(Error::Disconnected)))
         ));
+    }
+
+    /// A pending peer-initiated connection dropped after the link went down must
+    /// release its slot reference, or the slot can never be allocated again.
+    #[test]
+    fn pending_dropped_after_disconnect_frees_slot() {
+        let mut resources: HostResources<DefaultPacketPool, 2, 1> = HostResources::new();
+        let ble = MockController::new();
+
+        let builder = crate::new(ble, &mut resources);
+        let ble = BleHost::new(
+            builder.controller.as_ref().unwrap(),
+            builder.host_state.as_ref().unwrap(),
+        );
+
+        let conn = ConnHandle::new(33);
+        ble.connections()
+            .connect(
+                conn,
+                Address::new(AddrKind::PUBLIC, BdAddr::new([0; 6])),
+                LeConnRole::Peripheral,
+                ConnParams::new(),
+            )
+            .unwrap();
+        ble.channels()
+            .alloc(conn, Some(0x40), |storage| {
+                storage.state = ChannelState::PeerConnecting(7);
+            })
+            .unwrap();
+
+        // Application takes the pending request (refcount 0 -> 1) ...
+        let pending = {
+            let mut fut = core::pin::pin!(ble.channels().next_pending(conn, ble.connections()));
+            let waker = futures::task::noop_waker();
+            let mut cx = core::task::Context::from_waker(&waker);
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(Ok(p)) => p,
+                _ => panic!("expected a pending connection"),
+            }
+        };
+
+        // ... then the peer drops the link while the request is still pending ...
+        ble.connections().disconnected(conn, Status::UNSPECIFIED).unwrap();
+        ble.channels().disconnected(conn).unwrap();
+
+        // ... and the application drops the request unanswered.
+        drop(pending);
+
+        // The only slot must be allocatable again.
+        let conn2 = ConnHandle::new(34);
+        ble.connections()
+            .connect(
+                conn2,
+                Address::new(AddrKind::PUBLIC, BdAddr::new([1; 6])),
+                LeConnRole::Peripheral,
+                ConnParams::new(),
+            )
+            .unwrap();
+        ble.channels()
+            .alloc(conn2, Some(0x40), |storage| {
+                storage.state = ChannelState::PeerConnecting(8);
+            })
+            .expect("slot leaked by a dropped pending connection");
+    }
+
+    /// Same leak shape through `accept_pending`: the pending handle's index is
+    /// consumed before the state check, so a post-disconnect accept must release
+    /// the reference itself.
+    #[test]
+    fn accept_after_disconnect_frees_slot() {
+        let mut resources: HostResources<DefaultPacketPool, 2, 1> = HostResources::new();
+        let ble = MockController::new();
+
+        let builder = crate::new(ble, &mut resources);
+        let ble = BleHost::new(
+            builder.controller.as_ref().unwrap(),
+            builder.host_state.as_ref().unwrap(),
+        );
+
+        let conn = ConnHandle::new(33);
+        ble.connections()
+            .connect(
+                conn,
+                Address::new(AddrKind::PUBLIC, BdAddr::new([0; 6])),
+                LeConnRole::Peripheral,
+                ConnParams::new(),
+            )
+            .unwrap();
+        ble.channels()
+            .alloc(conn, Some(0x40), |storage| {
+                storage.state = ChannelState::PeerConnecting(7);
+            })
+            .unwrap();
+
+        let pending = {
+            let mut fut = core::pin::pin!(ble.channels().next_pending(conn, ble.connections()));
+            let waker = futures::task::noop_waker();
+            let mut cx = core::task::Context::from_waker(&waker);
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(Ok(p)) => p,
+                _ => panic!("expected a pending connection"),
+            }
+        };
+
+        ble.connections().disconnected(conn, Status::UNSPECIFIED).unwrap();
+        ble.channels().disconnected(conn).unwrap();
+
+        let index = pending.into_index();
+        let config = L2capChannelConfig::default();
+        let res = {
+            let mut fut = core::pin::pin!(ble.channels().accept_pending(index, &config, ble));
+            let waker = futures::task::noop_waker();
+            let mut cx = core::task::Context::from_waker(&waker);
+            fut.as_mut().poll(&mut cx)
+        };
+        assert!(matches!(res, Poll::Ready(Err(BleHostError::BleHost(Error::NotFound)))));
+
+        let conn2 = ConnHandle::new(34);
+        ble.connections()
+            .connect(
+                conn2,
+                Address::new(AddrKind::PUBLIC, BdAddr::new([1; 6])),
+                LeConnRole::Peripheral,
+                ConnParams::new(),
+            )
+            .unwrap();
+        ble.channels()
+            .alloc(conn2, Some(0x40), |storage| {
+                storage.state = ChannelState::PeerConnecting(8);
+            })
+            .expect("slot leaked by accept_pending after disconnect");
     }
 }
