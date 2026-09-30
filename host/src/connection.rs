@@ -691,6 +691,16 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         self.manager.is_bonded_peer(self.index)
     }
 
+    /// Whether an SMP pairing procedure with this connection's peer is
+    /// currently running (started by either side and not yet finished).
+    ///
+    /// Lets a peripheral that would otherwise send a Security Request notice
+    /// that the central has already opened pairing itself.
+    #[cfg(feature = "security")]
+    pub fn is_pairing_in_progress(&self) -> bool {
+        self.manager.is_pairing_in_progress(self.index)
+    }
+
     /// Try to enable encryption with a bonded peer if it is not yet established
     #[cfg(feature = "security")]
     pub(crate) async fn try_enable_encryption(&self) -> Result<(), Error> {
@@ -787,6 +797,15 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
     pub fn disconnect(&self) {
         self.manager
             .request_disconnect(self.index, DisconnectReason::RemoteUserTerminatedConn);
+    }
+
+    /// Request connection to be disconnected with an explicit HCI reason.
+    ///
+    /// The peer's host sees the reason in its disconnection event, so e.g.
+    /// `AuthenticationFailure` lets a central tell "refused: not paired" apart
+    /// from an ordinary `RemoteUserTerminatedConn`.
+    pub fn disconnect_with_reason(&self, reason: DisconnectReason) {
+        self.manager.request_disconnect(self.index, reason);
     }
 
     /// Read metrics for this connection

@@ -817,6 +817,22 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
     }
 
     #[cfg(feature = "security")]
+    pub(crate) fn is_pairing_in_progress(&self, index: u8) -> bool {
+        let address = {
+            let storage = self.connection(index);
+            if storage.state != ConnectionState::Connected {
+                return false;
+            }
+            storage
+                .resolvable_addrs
+                .peer
+                .map(|a| Address::new(AddrKind::RANDOM, a))
+                .unwrap_or(storage.peer_identity.addr)
+        };
+        self.security_manager.is_pairing_in_progress(address)
+    }
+
+    #[cfg(feature = "security")]
     pub(crate) async fn try_enable_encryption(&self, index: u8) -> Result<(), Error> {
         let address = {
             let storage = self.connection(index);
